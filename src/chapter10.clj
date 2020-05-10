@@ -29,60 +29,49 @@
 
 (def url "https://www.braveclojure.com/random-quote")
 (def n-cores 4) ;; number of cores on my machine
-(def word-freq (atom {}))
+
+;; Q1 - threads/cores - is there any correlation?
+
+;(def word-freq (atom {})) ;; removed this and replaced with non-global variable
 
 (defn quote-word-count
   "chapter 9"
   [n-quotes]
-  (doseq [calls (partition-all (/ n-quotes n-cores) (range n-quotes))] ; this splits up the input up into n new threads, being equal to the number of cores on my machine.
-    (doseq [nth-call calls]
-;;; AP - This has a subtle, and nasty bug. :-(
-;;; You're blocking on @read-quote right after each future,
-;;; and thus the doseq can't start the next future until each
-;;; one has finished.  You can see this by inserting a print statement
-;;; in your future like I've done below.  On my box, this printed:
-;;;
-;; Starting future: 16
-;; Finished future:  16
-;; Starting future: 200
-;; Finished future:  200
-;; Starting future: 951
-;; Finished future:  951
-;; Starting future: 333
-;; Finished future:  333
-;; Starting future: 322
-;; Finished future:  322
-;;
-;; You need to get to a situation where it prints something more like:
-;; Starting future: 16
-;; Starting future: 200
-;; Starting future: 322
-;; Starting future: 333
-;; Starting future: 951
-;; Finished future:  16
-;; Finished future:  200
-;; Finished future:  322
-;; Finished future:  333
-;; Finished future:  951
-;;
-;; Do you understand why?  AP
-      (let [read-quote (promise)
-            id (rand-int 1000)]
-        (future
-          (println "Starting future:" id)
-          (deliver read-quote (slurp url))
-          (swap! word-freq (fn [current-state]
-                             (merge-with + current-state (frequencies (s/split @read-quote #"\W+"))))))
-        @read-quote
-        (println "Finished future: " id))))
-;;; AP - Try to not return global values from functions.
-;;; Better is:
-;;; (let [word-freq (atom {})]
-;;;   (your code here)
-;;;   @word-freq)
-  @word-freq)
+  (let [quote-hits (atom {:hits 0 :words {}})
+        word-freq (atom {})
+        future-finished? (promise)]
+    (doseq [calls (partition-all (/ n-quotes n-cores) (range n-quotes))] ; this splits up the input up into n new threads, being equal to the number of cores on my machine.
+      (doseq [nth-call calls]
+        (let [id (rand-int 1000)]
+          (future
+            (println "Starting future:" id)
+            (let [read-quote (slurp url)]
+              (swap! quote-hits
+                     #(-> %
+                          (update :hits inc)
+                          (assoc-in [:words] (merge-with + (:words @quote-hits) (frequencies (s/split read-quote #"\W+"))))))
+              ;; Q2 - any way to use update in this form?
+              ;;    - in the macro, where does the term get placed? i.e. do i need (:words @quote-hits) in the merge with. Compare to "current-state" below.
+              #_ (swap! word-freq (fn [current-state]
+                                 (merge-with + current-state (frequencies (s/split read-quote #"\W+"))))))
+            ;; Q3 - perfromance benefits (if any) of using one SWAP! instead of multiple
+            (println "Finished future: " id)
+            (if (= n-quotes (:hits @quote-hits))
+              (deliver future-finished? true))))))
+    
+    ;; Q3 - delivering the promise - in this case it seems you can do it without it (see below). Whats the best practise?
+    #_(while (false? (= n-quotes (:hits @quote-hits)))
+      "do nothing") ; this seems to work
+    #_(println "future finshed:")
+    #_(println (realized? future-finished?))
+    #_(while (not (realized? future-finished?))
+      "do nothing") ; this works
+    (and @future-finished?
+         @quote-hits) ;this works
+    #_@word-freq
+    #_@quote-hits))
 
-(quote-word-count 5)
+(time (quote-word-count 5))
 
 ;----------------------------------------------------------------------------------------------------------------------------------
 ;;;; Excercise 3:
@@ -109,7 +98,7 @@
 ;; I was going to put a validator on the potion to make sure they have one to remove, but instead I have
 ;; killed a third player - just for fun.... and provided a warning message
 
-(defn is-dead?
+(defn assert-alive!
   [{:keys [hit]}]
   ;; AP - Stylistic note: typically, a function with a name ending in a question mark
   ;; is considered a "predicate" and returns a true/false value.  It should never throw.
@@ -119,7 +108,7 @@
 
 (def player-3 (ref {:hit 0
                     :inventory {}}
-                   :validator is-dead?))
+                   :validator assert-alive!))
 
 (defn take-hit
   [player hit]
